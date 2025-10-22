@@ -1,0 +1,131 @@
+function insertAndUpdate(hoja_origen,hoja_update) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var dataSheet = ss.getSheetByName(hoja_origen);
+  var updateSheet = ss.getSheetByName(hoja_update);
+  
+  if (!dataSheet || !updateSheet) {
+    Logger.log('Las hojas no existen. Verifica los nombres de las hojas.');
+    return;
+  }
+  
+  var dataValues = dataSheet.getDataRange().getValues();
+  var updateValues = updateSheet.getDataRange().getValues();
+  
+  // Mapa de IDs existentes en la hoja 'insert_and_update'
+  var existingIds = new Map();
+  for (var i = 1; i < updateValues.length; i++) {
+    var id = updateValues[i][0];
+    var updatedAt = new Date(updateValues[i][1]); // Asumiendo que updated_at es la segunda columna
+    existingIds.set(id, { index: i, updatedAt: updatedAt });
+  }
+  
+  var newData = [];
+  var rowsToUpdate = [];
+  
+  // Recorre los datos de la hoja 'data'
+  for (var j = 1; j < dataValues.length; j++) {
+    var dataId = dataValues[j][0];
+    var dataUpdatedAt = new Date(dataValues[j][1]); // Asumiendo que updated_at es la segunda columna
+    
+    if (existingIds.has(dataId)) {
+      var existingRecord = existingIds.get(dataId);
+      // Si el ID existe, compara las fechas de updated_at
+      if (dataUpdatedAt > existingRecord.updatedAt) {
+        // Actualiza la fila completa si la fecha de updated_at es más reciente
+        rowsToUpdate.push({ row: existingRecord.index + 1, values: dataValues[j] });
+      }
+    } else {
+      // Si el ID no existe, añade a los nuevos datos
+      newData.push(dataValues[j]);
+    }
+  }
+
+  // Actualiza las filas existentes
+  rowsToUpdate.forEach(function(rowData) {
+    updateSheet.getRange(rowData.row, 1, 1, rowData.values.length).setValues([rowData.values]);
+  });
+  
+  // Inserta los nuevos datos en la hoja 'insert_and_update'
+  if (newData.length > 0) {
+    updateSheet.getRange(updateValues.length + 1, 1, newData.length, newData[0].length).setValues(newData);
+  }
+}
+
+function updateSheetContent(card_id, sheet_name) {
+  try {
+    // Obtener los datos de Metabase
+    var values = get_metabase_card_data(card_id);
+    if (!values || values.length === 0) {
+      Logger.log('No se encontraron datos para importar desde Metabase.');
+      return;
+    }
+
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var destinationSheet = spreadsheet.getSheetByName(sheet_name);
+
+    if (!destinationSheet) {
+      Logger.log('Error: La hoja "' + sheet_name + '" no existe.');
+      return;
+    }
+
+    // Limpiar la hoja y actualizar con los nuevos datos
+    destinationSheet.clear();
+    destinationSheet.getRange(1, 1, values.length, values[0].length).setValues(values);
+    Logger.log('Datos actualizados exitosamente en la hoja "' + sheet_name + '".');
+    
+  } catch (error) {
+    Logger.log('Ocurrió un error al actualizar los datos: ' + error.message);
+  }
+};
+
+
+function snapshotSheetContent(card_id, sheet_name) {
+  try {
+    // Obtener los datos de Metabase
+    var values = get_metabase_card_data(card_id);
+    if (!values || values.length === 0) {
+      Logger.log('No se encontraron datos para importar desde Metabase.');
+      return;
+    }
+
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var destinationSheet = spreadsheet.getSheetByName(sheet_name);
+
+    if (!destinationSheet) {
+      Logger.log('Error: La hoja "' + sheet_name + '" no existe.');
+      return;
+    }
+
+    var now = new Date();
+    var formattedDate = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+
+    var lastRow = destinationSheet.getLastRow();
+    var startRow = lastRow + 1;
+    var dataToAppend = values;
+
+    // Si hay datos existentes, omitir la primera fila (encabezados)
+    if (lastRow > 0) {
+      dataToAppend = values.slice(1);
+    }
+
+    // Agregar la columna de fecha/hora a cada fila
+    dataToAppend = dataToAppend.map(function(row) {
+      return row.concat([formattedDate]);
+    });
+
+    // Si la hoja está vacía, agregar los encabezados con la columna 'snapshot_at'
+    if (lastRow === 0) {
+      values[0].push('snapshot_at');
+      destinationSheet.getRange(1, 1, 1, values[0].length).setValues([values[0]]);
+      startRow++;
+    }
+
+    // Añadir los datos al final de la hoja
+    destinationSheet.getRange(startRow, 1, dataToAppend.length, dataToAppend[0].length).setValues(dataToAppend);
+    Logger.log('Datos añadidos exitosamente al final de la hoja "' + sheet_name + '".');
+    
+  } catch (error) {
+    Logger.log('Ocurrió un error al tomar una instantánea de los datos: ' + error.message);
+  }
+};
+
