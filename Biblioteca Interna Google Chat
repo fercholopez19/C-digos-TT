@@ -1,0 +1,559 @@
+/**
+ * @fileoverview Google Chat Library - Message Operations
+ *
+ * This module handles Google Chat message sending and thread management.
+ * Provides functions to send messages with text and cards, and utilities
+ * for working with message threads and URLs.
+ *
+ * @author Operations Team
+ */
+
+/**
+ * Sends a message to a Google Chat space.
+ *
+ * Sends text messages, card messages, or both to a specified Google Chat
+ * space. Can optionally send messages as replies to existing threads.
+ * At least one of text or card parameters must be provided.
+ *
+ * @param {string} spaceId - The Google Chat space ID (e.g., 'AAAAGcxxxxxxx')
+ * @param {string} text - Plain text message content (optional)
+ * @param {Object} card - Card object for rich message formatting (optional)
+ * @param {string} threadName - Thread name for replies (optional)
+ *   (format: 'spaces/{space}/threads/{thread}')
+ * @param {string} privateMessageViewerEmail - Email for private message
+ * @returns {Object} Response object from Google Chat API
+ * @throws {Error} When API call fails or authentication issues occur
+ *
+ * @example
+ * // Send simple text message
+ * const response = sendGoogleChatMessage(
+ *   'AAAAGcxxxxxxx',
+ *   'Hello team!'
+ * );
+ *
+ * @example
+ * // Send message with user mention
+ * const userTag = userEmailToUserTag('john@houm.com');
+ * const response = sendGoogleChatMessage(
+ *   'AAAAGcxxxxxxx',
+ *   `Hi ${userTag}, please review this.`
+ * );
+ *
+ * @example
+ * // Reply to existing thread
+ * const threadName = messageUrlToThreadName(messageUrl);
+ * const response = sendGoogleChatMessage(
+ *   'AAAAGcxxxxxxx',
+ *   'Thanks for the update!',
+ *   null,
+ *   threadName
+ * );
+ */
+function sendGoogleChatMessage(
+  spaceId,
+  text = null,
+  card = null,
+  threadName = null,
+  privateMessageViewerEmail = null
+
+) {
+  const apiUrl = `https://chat.googleapis.com/v1/spaces/${spaceId}/messages`;
+
+  // Build payload conditionally
+  const payload = {};
+
+  if (text !== null) {
+    payload.text = text;
+  }
+
+  if (card !== null) {
+    payload.cardsV2 = [{ card: card }];
+  }
+
+  if (threadName !== null) {
+    payload.thread = { name: threadName };
+  }
+
+  if (privateMessageViewerEmail !== null) {
+    payload.privateMessageViewer = { name: `users/${privateMessageViewerEmail}`}
+  }
+
+  // Log the request (masking sensitive data)
+  const urlForLogging = apiUrl.replace(
+    /[?&](key|token)=[^&]*/g,
+    (match, param) => `&${param}=***`,
+  );
+  console.log(`Sending a new Google Chat message to: ${urlForLogging}`);
+
+  const options = {
+    method: "POST",
+    contentType: "application/json",
+    headers: {
+      Authorization: `Bearer ${getGoogleChatToken()}`,
+    },
+    payload: JSON.stringify(payload),
+  };
+
+  // Modify URL if threadName is provided
+  let finalUrl = apiUrl;
+
+  if (threadName !== null) {
+    options.thread = {
+      name: threadName,
+    };
+    finalUrl += "?messageReplyOption=REPLY_MESSAGE_OR_FAIL";
+  }
+
+  const response = UrlFetchApp.fetch(finalUrl, options);
+
+  console.log(`Response status: ${response.getResponseCode()}`);
+
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * Updates the text content of an existing Google Chat message.
+ *
+ * Patches an existing Google Chat message by updating only its text content.
+ * This operation preserves any existing card content in the message while
+ * replacing the text portion. The message must exist and be accessible
+ * to the authenticated user or bot.
+ *
+ * @param {string} msgName - The full message name/resource identifier
+ *   (format: 'spaces/{space}/messages/{message}')
+ * @param {string} text - New text content to replace existing message text
+ * @returns {Object} Updated message object from Google Chat API
+ * @throws {Error} When API call fails, message not found, or authentication issues occur
+ *
+ * @example
+ * // Update message text after getting message name from original response
+ * const originalResponse = sendGoogleChatMessage('AAAAGcxxxxxxx', 'Original text');
+ * const messageName = originalResponse.name;
+ * const updatedResponse = patchGoogleChatMessageText(
+ *   messageName,
+ *   'Updated text content'
+ * );
+ *
+ * @example
+ * // Update message text with user mention
+ * const userTag = userEmailToUserTag('jane@houm.com');
+ * const updatedResponse = patchGoogleChatMessageText(
+ *   'spaces/AAAAGcxxxxxxx/messages/AbCdEf123456',
+ *   `${userTag}, the task is now complete!`
+ * );
+ *
+ * @example
+ * // Update message to reflect status change
+ * const updatedResponse = patchGoogleChatMessageText(
+ *   messageName,
+ *   '✅ Task completed successfully'
+ * );
+ */
+function patchGoogleChatMessageText(msgName, text) {
+  const apiUrl = `https://chat.googleapis.com/v1/${msgName}?updateMask=text`;
+
+  // Build payload
+  const payload = {};
+  payload.text = text;
+
+  // Log the request (masking sensitive data)
+  const urlForLogging = apiUrl.replace(
+    /[?&](key|token)=[^&]*/g,
+    (match, param) => `&${param}=***`,
+  );
+  console.log(
+    `Sending a text patch for a Google Chat message to: ${urlForLogging}`,
+  );
+
+  const options = {
+    method: "PATCH",
+    contentType: "application/json",
+    headers: {
+      Authorization: `Bearer ${getGoogleChatToken()}`,
+    },
+    payload: JSON.stringify(payload),
+  };
+
+  const response = UrlFetchApp.fetch(apiUrl, options);
+
+  console.log(`Response status: ${response.getResponseCode()}`);
+
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * Updates the card content of an existing Google Chat message.
+ *
+ * Patches an existing Google Chat message by updating only its card content.
+ * This operation preserves any existing text content in the message while
+ * replacing the card portion. The message must exist and be accessible
+ * to the authenticated user or bot. Cards provide rich formatting with
+ * interactive elements like buttons and widgets.
+ *
+ * @param {string} msgName - The full message name/resource identifier
+ *   (format: 'spaces/{space}/messages/{message}')
+ * @param {Object} card - Card object containing rich content structure
+ *   with sections, widgets, buttons, and other interactive elements
+ * @returns {Object} Updated message object from Google Chat API
+ * @throws {Error} When API call fails, message not found, or authentication issues occur
+ *
+ * @example
+ * // Update message card after getting message name from original response
+ * const originalResponse = sendGoogleChatMessage('AAAAGcxxxxxxx', null, cardObject);
+ * const messageName = originalResponse.name;
+ * const newCard = createStatusCard('Completed', 'Task finished successfully');
+ * const updatedResponse = patchGoogleChatMessageCard(messageName, newCard);
+ *
+ * @example
+ * // Update card with new button states
+ * const updatedCard = {
+ *   sections: [{
+ *     widgets: [{
+ *       textParagraph: { text: 'Updated status information' }
+ *     }, {
+ *       buttonList: {
+ *         buttons: [{
+ *           text: 'View Details',
+ *           onClick: { openLink: { url: 'https://example.com/details' }}
+ *         }]
+ *       }
+ *     }]
+ *   }]
+ * };
+ * const updatedResponse = patchGoogleChatMessageCard(
+ *   'spaces/AAAAGcxxxxxxx/messages/AbCdEf123456',
+ *   updatedCard
+ * );
+ *
+ * @example
+ * // Update card to show progress or status change
+ * const progressCard = createProgressCard('Processing...', 75);
+ * const updatedResponse = patchGoogleChatMessageCard(messageName, progressCard);
+ */
+function patchGoogleChatMessageCard(msgName, card) {
+  const apiUrl = `https://chat.googleapis.com/v1/${msgName}?updateMask=cardsV2`;
+
+  // Build payload
+  const payload = {};
+  payload.cardsV2 = [{ card: card }];
+
+  // Log the request (masking sensitive data)
+  const urlForLogging = apiUrl.replace(
+    /[?&](key|token)=[^&]*/g,
+    (match, param) => `&${param}=***`,
+  );
+  console.log(
+    `Sending a card patch for a Google Chat message to: ${urlForLogging}`,
+  );
+
+  const options = {
+    method: "PATCH",
+    contentType: "application/json",
+    headers: {
+      Authorization: `Bearer ${getGoogleChatToken()}`,
+    },
+    payload: JSON.stringify(payload),
+  };
+
+  const response = UrlFetchApp.fetch(apiUrl, options);
+
+  console.log(`Response status: ${response.getResponseCode()}`);
+
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * Builds a thread name string in the Google Chat API format.
+ *
+ * @param {string} spaceId - The unique identifier of the space
+ * @param {string} threadId - The unique identifier of the thread
+ * @returns {string} The formatted thread name in the format "spaces/{spaceId}/threads/{threadId}"
+ */
+function buildThreadName(spaceId, threadId) {
+  return `spaces/${spaceId}/threads/${threadId}`;
+}
+
+/**
+ * Extracts thread name from a Google Chat message URL.
+ *
+ * Parses a Google Chat message URL and converts it to the thread name
+ * format required by the Google Chat API for sending replies.
+ *
+ * @param {string} msgUrl - Full Google Chat message URL
+ * @returns {string} Thread name in format 'spaces/{spaceId}/threads/{threadId}'
+ *
+ * @example
+ * // Convert message URL to thread name
+ * const url = 'https://chat.google.com/room/AAAAGc.../AAARlIGv...';
+ * const threadName = messageUrlToThreadName(url);
+ * // Returns: 'spaces/AAAAGc.../threads/AAARlIGv...'
+ *
+ * @example
+ * // Use for replying to a message
+ * const threadName = messageUrlToThreadName(originalMessageUrl);
+ * sendGoogleChatMessage(spaceId, 'Reply text', null, threadName);
+ */
+function messageUrlToThreadName(msgUrl) {
+  const slashedMsgUrl = msgUrl.split("/");
+  return buildThreadName(slashedMsgUrl[4], slashedMsgUrl[5]);
+}
+
+/**
+ * Saves the thread name from a Google Chat message response to the
+ * form submit spreadsheet.
+ *
+ * Ensures proper spreadsheet structure by checking if "Timestamp"
+ * column is in position B. If it's in position A, inserts a new
+ * column to move everything right, then saves the thread name to
+ * column A.
+ *
+ * @param {string} threadName - Google Chat API response.thread.name value
+ * @param {Object} event - Form submission event object
+ * @returns {void}
+ *
+ * @example
+ * // Send message and save thread name
+ * const response = sendGoogleChatMessage(spaceId, message, card);
+ * saveThreadNameToSubmitSheet(response.thread.name, event);
+ */
+function saveThreadNameToSubmitSheet(threadName, event) {
+  // Get the sheet
+  const sheet = event.source.getActiveSheet();
+
+  // Check the header row to see current structure
+  const headerRow = sheet.getRange(1, 1, 1, 3).getValues()[0];
+
+  // Check if "Timestamp" is in column A (index 0)
+  if (headerRow[0] === "Timestamp") {
+    // Insert a new column at position 1 to push everything right
+    sheet.insertColumnBefore(1);
+
+    // Set the header for the new Thread Name column
+    sheet.getRange(1, 1).setValue("Thread Name");
+  } else if (headerRow[0] !== "Thread Name") {
+    // If column A is not "Thread Name" and not "Timestamp",
+    // assume we need to set up the structure
+    sheet.insertColumnBefore(1);
+    sheet.getRange(1, 1).setValue("Thread Name");
+  }
+
+  // Get the last row and save the thread name to column A
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(lastRow, 1).setValue(threadName);
+}
+
+//function testIvo3() {
+//  const response1 = sendGoogleChatMessage(
+//    "AAQAh4tAiWg",
+//    `oye yapo pesca ${userEmailToUserTag("ivo.pletikosic@houm.com")}`,
+//    null,
+//    messageUrlToThreadName("https://chat.google.com/room/AAQAh4tAiWg/xnxTzsoRIhM/xnxTzsoRIhM?cls=10"),
+//    "ivo.pletikosic@houm.com"
+//  );
+//  console.log(response1)
+//
+//  const response2 = patchGoogleChatMessageText(response1.name, "holaaa")
+//}
+/**
+ * @fileoverview Google Chat Library - Token Management
+ *
+ * This module handles authentication token retrieval for Google Workspace
+ * APIs through AWS Lambda integration. Used for operations team
+ * integration workflows.
+ *
+ * @author Operations Team
+ */
+
+/**
+ * Retrieves access token for Google Directory API operations.
+ *
+ * Makes a request to the AWS Lambda service to obtain a valid access token
+ * for Google Admin Directory API calls. The token is used for user lookup
+ * and directory operations.
+ *
+ * @returns {string} Valid Google Directory API access token
+ * @throws {Error} When token retrieval fails or service is unavailable
+ *
+ * @example
+ * // Get token for directory operations
+ * const token = getGoogleDirectoryToken();
+ * // Use token in Authorization header
+ * const headers = { Authorization: `Bearer ${token}` };
+ */
+function getGoogleDirectoryToken() {
+  const LAMBDA_URL =
+    "https://fsxuwzrbutdirlndjwl4cldonm0rcnsp.lambda-url.us-east-1.on.aws";
+
+  const tokenResp = UrlFetchApp.fetch(LAMBDA_URL + "/directory", {
+    method: "get",
+    headers: {
+      API_KEY: "EBBjRa20w1HRnwiBm5ai3LVRlmSOaItf",
+    },
+    muteHttpExceptions: true,
+  });
+
+  if (tokenResp.getResponseCode() !== 200) {
+    throw new Error("Error obteniendo token: " + tokenResp.getContentText());
+  }
+
+  return JSON.parse(tokenResp.getContentText()).access_token;
+}
+
+function getGoogleGroupsToken() {
+  const LAMBDA_URL =
+    "https://fsxuwzrbutdirlndjwl4cldonm0rcnsp.lambda-url.us-east-1.on.aws";
+
+  const tokenResp = UrlFetchApp.fetch(LAMBDA_URL + "/groups", {
+    method: "get",
+    headers: {
+      API_KEY: "EBBjRa20w1HRnwiBm5ai3LVRlmSOaItf",
+    },
+    muteHttpExceptions: true,
+  });
+
+  if (tokenResp.getResponseCode() !== 200) {
+    throw new Error("Error obteniendo token: " + tokenResp.getContentText());
+  }
+
+  return JSON.parse(tokenResp.getContentText()).access_token;
+}
+
+/**
+ * Retrieves access token for Google Chat API operations.
+ *
+ * Makes a request to the AWS Lambda service to obtain a valid access token
+ * for Google Chat API calls. The token is used for sending messages and
+ * managing chat spaces.
+ *
+ * @returns {string} Valid Google Chat API access token
+ * @throws {Error} When token retrieval fails or service is unavailable
+ *
+ * @example
+ * // Get token for chat operations
+ * const token = getGoogleChatToken();
+ * // Use token in Authorization header
+ * const headers = { Authorization: `Bearer ${token}` };
+ */
+function getGoogleChatToken() {
+  const LAMBDA_URL =
+    "https://fsxuwzrbutdirlndjwl4cldonm0rcnsp.lambda-url.us-east-1.on.aws";
+
+  const tokenResp = UrlFetchApp.fetch(LAMBDA_URL + "/chat", {
+    method: "get",
+    headers: {
+      API_KEY: "EBBjRa20w1HRnwiBm5ai3LVRlmSOaItf",
+    },
+    muteHttpExceptions: true,
+  });
+
+  if (tokenResp.getResponseCode() !== 200) {
+    throw new Error("Error obteniendo token: " + tokenResp.getContentText());
+  }
+
+  return JSON.parse(tokenResp.getContentText()).access_token;
+}
+/**
+ * @fileoverview Google Chat Library - User Management
+ *
+ * This module provides utilities for user lookup and tagging operations
+ * within the houm.com domain. Used for converting between email addresses,
+ * user IDs, and chat mention tags.
+ *
+ * @author Operations Team
+ */
+
+/**
+ * Converts user email address to Google Workspace user ID.
+ *
+ * Queries the Google Admin Directory API to find a user by email address
+ * within the houm.com domain and returns their unique user ID. Returns
+ * an error message string if the user is not found.
+ *
+ * @param {string} email - The email address to look up (e.g., 'user@houm.com')
+ * @returns {string} User ID if found, error message if not found
+ * @throws {Error} When Directory API call fails or returns non-200 status
+ *
+ * @example
+ * // Look up user by email
+ * const userId = userEmailToUserId('john.doe@houm.com');
+ * if (userId.startsWith('Did not found')) {
+ *   console.log('User not found');
+ * } else {
+ *   console.log('User ID:', userId);
+ * }
+ */
+function userEmailToUserId(email) {
+  const apiUrl =
+    "https://admin.googleapis.com/admin/directory/v1/users" +
+    "?domain=houm.com" +
+    "&maxResults=1" +
+    `&query=email:${email}` +
+    "&orderBy=email";
+
+  const apiResp = UrlFetchApp.fetch(apiUrl, {
+    method: "get",
+    headers: {
+      Authorization: "Bearer " + getGoogleDirectoryToken(),
+      Accept: "application/json",
+    },
+    muteHttpExceptions: true,
+  });
+
+  if (apiResp.getResponseCode() !== 200) {
+    throw new Error(
+      "Error llamando Directory API: " + apiResp.getContentText(),
+    );
+  }
+
+  const users = JSON.parse(apiResp.getContentText()).users || [];
+  if (users.length === 0) {
+    Logger.log(`Did not found any user with email ${email}.`);
+    return `Did not found any user with email ${email}.`;
+  } else {
+    Logger.log(`User found: ${users[0].id}`);
+    return users[0].id;
+  }
+}
+
+/**
+ * Converts a Google Workspace user ID to a chat mention tag.
+ *
+ * Takes a user ID and formats it as a Google Chat mention tag that can
+ * be used in chat messages to mention/tag the user.
+ *
+ * @param {string} userId - Google Workspace user ID
+ * @returns {string} Formatted mention tag for Google Chat
+ *
+ * @example
+ * // Create mention tag from user ID
+ * const tag = userIdToUserTag('103285916955555555555');
+ * // Returns: '<users/103285916955555555555>'
+ */
+function userIdToUserTag(userId) {
+  return `<users/${userId}>`;
+}
+
+/**
+ * Converts user email address directly to a chat mention tag.
+ *
+ * Convenience function that combines email lookup and tag formatting.
+ * First looks up the user ID from the email, then formats it as a
+ * mention tag for use in Google Chat messages.
+ *
+ * @param {string} email - The email address to convert to mention tag
+ * @returns {string} Formatted mention tag if user found, error message if not
+ * @throws {Error} When Directory API call fails
+ *
+ * @example
+ * // Convert email directly to mention tag
+ * const tag = userEmailToUserTag('jane.smith@houm.com');
+ * // Returns: '<users/103285916955555555555>' or error message
+ *
+ * @example
+ * // Use in message sending
+ * const message = `Hey ${userEmailToUserTag('john@houm.com')}, check this!`;
+ * sendGoogleChatMessage(spaceId, message);
+ */
+function userEmailToUserTag(email) {
+  return userIdToUserTag(userEmailToUserId(email));
+}
