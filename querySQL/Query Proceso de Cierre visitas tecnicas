@@ -1,0 +1,45 @@
+WITH visitas_limpieza AS (
+SELECT 
+    scheduler_schedules.id AS schedule_id,
+    scheduler_schedules.prop_id as property_id, 
+    TO_CHAR(scheduler_schedules.created_at,'YYYY-MM-DD HH24:MM') as created_at,
+    TO_CHAR(scheduler_schedules.begin_date,'YYYY-MM-DD HH24:MM') as begin_date,
+    -- scheduler_schedules.end_date,
+    scheduler_appraisers.name,
+    scheduler_schedules.comment,
+    scheduler_schedules.origin,
+    scheduler_schedules.status,
+    ROW_NUMBER() OVER (PARTITION BY scheduler_schedules.prop_id ORDER BY scheduler_schedules.begin_date DESC) AS rn
+    
+
+
+from raw_stage.scheduler_schedules
+    left join raw_stage.scheduler_scheduletypes
+    on scheduler_scheduletypes.id = scheduler_schedules.schedule_type_id
+        left join raw_stage.scheduler_appraisers
+        on scheduler_appraisers.id = scheduler_schedules.appraiser_id
+        
+        LEFT JOIN raw_stage.arriendoasegurado_houmergroupmembers 
+                ON arriendoasegurado_houmergroupmembers.user_id = scheduler_appraisers.user_id
+                    LEFT JOIN raw_stage.arriendoasegurado_houmergroup
+                        ON arriendoasegurado_houmergroup.id = arriendoasegurado_houmergroupmembers.houmer_group_id
+    LEFT JOIN dbt_processing.proc_core_properties
+        ON proc_core_properties.property_id = scheduler_schedules.prop_id
+
+                    
+where TRUE
+and proc_core_properties.country = 'Chile'
+and status IN ('Done', 'Confirmed', 'Scheduled')
+and scheduler_schedules.schedule_type_id = '90f61660-beb6-4449-aefa-f876eb9dcf0c' -- Technical
+and scheduler_appraisers.name not in ('Product Franco Capurro', 'Eyal Levy', 'app app', 'Manuel Duran', 'Agustin Dume', 'sonia Cubillos', 'Sonia Alvarado')
+and scheduler_schedules.created_at >= '2025-07-01'
+)
+
+, visitas_limpieza_1 AS (
+SELECT
+*
+FROM visitas_limpieza
+WHERE TRUE 
+    AND rn = 1
+)
+SELECT * FROM visitas_limpieza_1 WHERE created_at >= '2025-08-01'
