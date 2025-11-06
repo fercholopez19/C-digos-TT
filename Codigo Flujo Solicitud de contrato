@@ -1,0 +1,105 @@
+function onFormSubmit2(e) {
+  const v = e.namedValues;
+
+  const ejecutivo = google_chat.userEmailToUserTag(v["Dirección de correo electrónico"]?.[0]);
+  const leaseId = v["Lease ID"]?.[0];
+  const propertyId = v["Property ID"]?.[0];
+  const contractId = v["Contract ID"]?.[0];
+  const fechainiciocontrato = v["Fecha de inicio contrato"]?.[0];
+  const categoriapropiedad = v["Categoria de propiedad"]?.[0];
+  const amoblado = v["Amoblado"]?.[0];
+  const reparaciones = v["Tiene Reparaciones"]?.[0];
+  const limpieza = v["Limpieza aprobada por propietario"]?.[0];
+
+  // Respuestas Checklist
+  const ck_ggcc = v["GGCC?"]?.[0];
+  const ck_limpieza = v["Limpieza?"]?.[0];
+  const ck_agua = v["Agua?"]?.[0];
+  const ck_luz = v["Luz?"]?.[0];
+  const ck_gas = v["Gas?"]?.[0];
+  const ck_llaves = v["Llaves"]?.[0];
+  const ck_bodega = v["Bodega"]?.[0];
+  const ck_entrada = v["Autorizacion Entrada"]?.[0];
+  const ck_reparaciones = v["Reparaciones"]?.[0];
+  const ck_estacionamiento = v["Estacionamiento"]?.[0];
+
+  const form2Url = "https://docs.google.com/forms/d/e/1FAIpQLSc2LWjHbP9b-heW-nAM4zq83Oxg3BygusU-mHp4xY-_79eGGg/viewform";
+  const prefilledUrl = form2Url + "?usp=pp_url" +
+    "&entry.1365151883=" + encodeURIComponent(leaseId) +
+    "&entry.1742387681=" + encodeURIComponent(propertyId) +
+    "&entry.1158785846=" + encodeURIComponent(contractId);
+
+  function buildChecklistItem(label, value) {
+    return {
+      decoratedText: {
+        topLabel: label,
+        text: value || "No Listo"
+      }
+    };
+  }
+
+  const text = `Flujo enviado por: ${ejecutivo}`;
+
+  const checklistWidgets = [
+    buildChecklistItem("GGCC 💰", ck_ggcc),
+    buildChecklistItem("Limpieza 🧹", ck_limpieza),
+    buildChecklistItem("Agua 💧", ck_agua),
+    buildChecklistItem("Luz 💡", ck_luz),
+    buildChecklistItem("Gas ⛽", ck_gas),
+    buildChecklistItem("Llaves 🔑", ck_llaves),
+    buildChecklistItem("Bodega 🔐", ck_bodega),
+    buildChecklistItem("Autorización Entrada 📧", ck_entrada),
+    buildChecklistItem("Reparaciones 🔨", ck_reparaciones),
+    buildChecklistItem("Estacionamiento 🚗", ck_estacionamiento),
+    {
+      buttonList: {
+        buttons: [
+          {
+            text: "Editar Checklist",
+            onClick: {
+              openLink: { url: prefilledUrl }
+            }
+          }
+        ]
+      }
+    }
+  ];
+
+  const card = {
+    header: {
+      title: "NUEVA SOLICITUD DE CONTRATO",
+      imageUrl: "https://developers.google.com/chat/images/quickstart-app-avatar.png",
+      imageType: "CIRCLE"
+    },
+    sections: [
+      {
+        header: "Información Principal",
+        widgets: [
+          { decoratedText: { icon: { knownIcon: "BOOKMARK" }, topLabel: "LEASE ID", text: leaseId } },
+          { decoratedText: { icon: { knownIcon: "STORE" }, topLabel: "PROPERTY ID", text: propertyId } },
+          { decoratedText: { icon: { knownIcon: "MEMBERSHIP" }, topLabel: "CONTRACT ID", text: contractId } },
+          { decoratedText: { icon: { knownIcon: "INVITE" }, topLabel: "FECHA DE INICIO CONTRATO", text: fechainiciocontrato } },
+          { decoratedText: { icon: { knownIcon: "STORE" }, topLabel: "CATEGORIA PROPIEDAD", text: categoriapropiedad } },
+          { decoratedText: { icon: { knownIcon: "HOTEL" }, topLabel: "AMOBLADO?", text: amoblado } },
+          { decoratedText: { icon: { knownIcon: "MULTIPLE_PEOPLE" }, topLabel: "LIMPIEZA?", text: limpieza } },
+          { decoratedText: { icon: { knownIcon: "DOLLAR" }, topLabel: "REPARACIONES?", text: reparaciones } },
+          { divider: {} }
+        ]
+      },
+      {
+        header: "CHECKLIST",
+        collapsible: true,
+        widgets: checklistWidgets
+      }
+    ]
+  };
+
+
+
+  const spaceId = "AAQAn0DS2To"; // ID de tu espacio
+  const response = google_chat.sendGoogleChatMessage(spaceId, text, card, null);
+
+  if (response?.thread?.name) {
+    google_chat.saveThreadNameToSubmitSheet(response.thread.name, e);
+  }
+}
