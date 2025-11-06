@@ -1,0 +1,306 @@
+WITH reservation AS (
+SELECT 
+    
+    reservation.id AS reservation_id,
+    reservation.payment_id,
+    reservation.created_at reservation_created_at,
+    reservation.payment_link,
+    reservation.refund_id,
+    reservation_status.status AS status_reservation,
+    reservation_status.description AS status_description,
+    
+    --HOUMER
+    reservation.appraiser_id,
+    scheduler_appraisers.name appraiser_name,
+    arriendoasegurado_houmergroup.name as celula,
+    scheduler_appraisers.email appraiser_email,
+    scheduler_appraisers.country,
+    
+    --LEASE APPLICATION
+    reservation.lease_application_id
+    
+    --FROM  mongo_reservations    
+    FROM raw_stage.reservation --ON mongo_reservations.movement_id = stg_reservation.payment_id
+    LEFT JOIN raw_stage.reservation_status on reservation.status_id = reservation_status.id
+    LEFT JOIN raw_stage.scheduler_appraisers on scheduler_appraisers.id = reservation.appraiser_id
+    LEFT JOIN raw_stage.arriendoasegurado_houmergroupmembers 
+        ON arriendoasegurado_houmergroupmembers.user_id = scheduler_appraisers.user_id
+    LEFT JOIN raw_stage.arriendoasegurado_houmergroup
+        ON arriendoasegurado_houmergroup.id = arriendoasegurado_houmergroupmembers.houmer_group_id
+    WHERE TRUE
+)
+
+
+, application AS ( 
+    SELECT 
+    
+    lease_application.id AS application_id,
+    lease_application.created_at AS application_created_at,
+    lease_application.application_user_id,
+    
+    lease_application.property_id AS application_property_id,
+    lease_application.contract_id,
+    
+    --STATUS APPLICATION
+    lease_application_status.status application_status,
+    lease_application_status.description application_status_description,
+    
+    --EVALUACIÓN
+    lease_application.evaluation,  --está en blanco por ahora
+    
+    --AÚN NO UTILES
+    lease_application.contract_preparation_form_id,
+    lease_application.property_condition_preparation_form_id,
+    TO_CHAR(lease_application.contract_paid_date,'YYYY-MM-DD HH24:MM') AS contract_paid_date
+
+    
+    FROM raw_stage.lease_application
+    LEFT JOIN raw_stage.lease_application_status on lease_application.status_id = lease_application_status.id 
+    LEFT JOIN raw_stage.users on lease_application.application_user_id = users.id 
+    --LEFT JOIN raw_stage.scheduler_appraisers on scheduler_appraisers.id = stg_lease_application.appraiser_id  
+    ORDER BY lease_application.created_at DESC
+)
+
+, reservation_mongo AS (
+SELECT
+    movements._id as mongo_id,
+    COALESCE((timezone( prop_mz.timezone, movements.date::TIMESTAMP)::TIMESTAMP WITH TIME ZONE),movements.date::TIMESTAMP) AS payment_date_loc ,
+    movements.status as mongo_status,
+    movements.total_amount
+
+FROM dbt_staging.stg_payments_cl_db_movements AS movements
+
+LEFT JOIN dbt_processing.proc_properties_mz AS prop_mz 
+    ON prop_mz.property_id = movements.property_id
+    
+WHERE TRUE 
+    AND concept='RESERVATION' 
+    AND type = 'INCOME'
+    AND status IN ('PAID','REFUNDED') --incluyo otros porque pueden cambiar en el tiempo
+)
+
+, evaluation_member AS (
+SELECT 
+    evaluation_member.*,
+    INITCAP(users.name||' '||users.last_name) AS user_name,
+    users.phone,
+    users.email,
+    users.document
+FROM raw_stage.evaluation_member
+
+
+LEFT JOIN raw_stage.users
+    ON users.id = evaluation_member.external_id
+
+WHERE user_name != 'Francomx Capurromx'
+)
+
+, evaluation_member_main AS (
+SELECT 
+    evaluation_member.*,
+    evaluation_person_information.name
+    
+FROM evaluation_member
+
+LEFT JOIN raw_stage.evaluation_person_information
+    ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+    
+WHERE role = 'main' AND status != 'start' 
+)
+
+, subs_v1 AS (
+SELECT
+    subscription_subscription.id,
+    contracts.id AS contract_id,
+    contracts.init_date AS contract_init_date,
+    subscription_subscription.property_id, 
+    TO_CHAR(payment_date,'YYYY-MM-DD HH24:MM') AS contract_payment_date,
+    subscription_subscription.created_at,
+    ROW_NUMBER() OVER (PARTITION BY subscription_subscription.property_id ORDER BY subscription_subscription.created_at DESC) priority_rank,
+    active
+FROM raw_stage.subscription_subscription
+    left join raw_stage.contracts
+    on subscription_subscription.contract_id = contracts.id
+WHERE TRUE 
+    -- AND active = 'true'
+ORDER BY property_id DESC
+
+)
+
+, subs AS (
+SELECT
+    id,
+    contract_id,
+    property_id, 
+    contract_payment_date,
+    contract_init_date,
+    active
+FROM subs_v1
+WHERE priority_rank = 1
+
+)
+
+, properties_info AS (
+SELECT
+    *
+FROM dbt_processing.proc_core_properties
+)
+
+, properties_table AS (
+SELECT 
+    id,
+    region,
+    comuna,
+    homechecker_id
+
+FROM raw_stage.properties
+)
+
+, keys_visits AS (
+
+SELECT
+    schedule_id,
+    property_id,
+    appraiser_name,
+    begin_at,
+    TO_CHAR(begin_at_loc,'YYYY-MM-DD') AS begin_at_loc,
+    status,
+    ROW_NUMBER() OVER (PARTITION BY property_id ORDER BY begin_at_loc DESC) priority_rank
+
+FROM dbt_processing.proc_schedules 
+
+WHERE TRUE 
+    AND type_name = 'Keys'
+    AND schedule_country = 'Chile'
+    AND created_at >= CURRENT_DATE - INTERVAL '2 months'
+    AND status != 'Cancelled'
+ORDER BY property_id ASC 
+)
+
+, key_visits_1 AS (
+SELECT * FROM keys_visits WHERE priority_rank = 1
+)
+
+, estado_perfil AS (
+SELECT
+    id,
+    global_evaluation_id,
+    status,
+    JSON_EXTRACT_PATH_TEXT(raw_input, 'property_id') AS property_id,
+    JSON_EXTRACT_PATH_TEXT(raw_input, 'lease_application_id') AS lease_application_id,
+    JSON_EXTRACT_PATH_TEXT(raw_output, 'status') AS status_perfil,
+    CASE 
+        WHEN JSON_EXTRACT_PATH_TEXT(raw_output, 'status') = 'approved' THEN 'Perfil Aprobado'
+        WHEN JSON_EXTRACT_PATH_TEXT(raw_output, 'status') = 'rejected' THEN 'Perfil Rechazado'
+        WHEN COALESCE(NULLIF(JSON_EXTRACT_PATH_TEXT(raw_output, 'status'), ''), '') = '' THEN 'Perfil Enviado'
+    END AS status_profile
+FROM raw_stage.global_evaluation_factor
+WHERE provider_name = 'cl_proprietary_opinion'
+)
+
+SELECT
+    TO_CHAR(current_timestamp,'YYYY-MM-DD HH24:MM:SS') AS updated_at,
+    
+    application.application_id AS lease_application_id,
+    'https://admin.houm.com/admin/lease-application/'||application.application_id AS url_lease,
+    CASE 
+        WHEN application.application_id = 395592 THEN 87971
+        ELSE application.application_property_id
+    END AS property_id,
+    reservation.reservation_id,
+    reservation_mongo.mongo_id as reservation_payment_id,
+    TO_CHAR(reservation_mongo.payment_date_loc,'YYYY-MM-DD HH24:MM') AS payment_date_loc,
+    reservation_mongo.total_amount AS total_amount_reserva,
+    global_evaluation.id AS global_evaluation_id,
+    
+    CASE global_evaluation.status
+       WHEN 'approved' THEN 'Aprobada'
+       WHEN 'incomplete' THEN 'Incompleta'
+       WHEN 'partially_approved' THEN 'Pre-aprobada'
+       WHEN 'pending' THEN 'Pendiente'
+       WHEN 'rejected' THEN 'Rechazada'
+       WHEN 'cancelled' THEN 'Cancelada'
+       ELSE 'Desconocido' -- Por si hay algún otro estado inesperado
+    END AS status_global_evaluation,
+    
+    -- application.application_user_id AS main_user_id,
+    INITCAP(users.name||' '||users.last_name) AS main_name,
+    evaluation_member_main.document AS main_document,
+    evaluation_member_main.phone AS main_phone,
+    evaluation_member_main.email AS main_email,
+    reservation.appraiser_name,
+    scheduler_appraisers.name AS hc_name,
+    INITCAP(REGEXP_REPLACE(properties_info.executive_name, '[^a-zA-ZáéíóúÁÉÍÓÚñÑ ]', '')) executive_name,
+    --COALESCE(subs.contract_id, application.contract_id) AS contract_id,
+    application.contract_id AS contract_id,
+    COALESCE(subs.contract_payment_date, application.contract_paid_date) AS contract_payment_date,
+
+    
+    properties_info.rental_local_price AS valor_canon,
+    properties_info.common_expenses AS valor_administracion,
+    properties_table.region,
+    properties_table.comuna,
+    TO_CHAR(properties_info.rental_last_publication_date,'YYYY-MM-DD') AS rental_last_publication_date,
+    reservation.appraiser_id AS houmer_id,
+
+    CASE     application.application_status
+       WHEN 'COMPLETED' THEN 'Completada'
+       WHEN 'CONTRACT_CREATED' THEN 'Contrato creado'
+       WHEN 'READY_FOR_CONTRACT' THEN 'Lista para el contrato'
+       WHEN 'STARTED' THEN 'Comenzada'
+       WHEN 'WAITING_FOR_CONTRACT_PAYMENT' THEN 'Esperando pago contrato'
+       WHEN 'CANCELED' THEN 'Cancelada'
+       WHEN 'WAITING_FOR_PROCESSES_TO_COMPLETE' THEN 'Esperando a procesos'
+       ELSE 'Desconocido' -- Por si hay algún otro estado inesperado
+    END AS application_status,
+    
+    key_visits_1.begin_at_loc as begin_at_loc_key,
+    reservation.celula,
+    TO_CHAR(subs.contract_init_date,'YYYY-MM-DD HH24:MM') AS contract_init_date, 
+    estado_perfil.status_profile
+    
+
+FROM reservation_mongo
+
+LEFT JOIN reservation
+    ON  reservation.payment_id = reservation_mongo.mongo_id
+    
+LEFT JOIN application 
+    ON reservation.lease_application_id = application.application_id 
+    
+LEFT JOIN raw_stage.global_evaluation
+    ON global_evaluation.id = application.evaluation
+    
+LEFT JOIN evaluation_member_main
+    ON evaluation_member_main.global_evaluation_id = application.evaluation
+    
+LEFT JOIN subs
+    ON subs.contract_id = application.contract_id -- AND subs.contract_payment_date > payment_date_loc
+    
+LEFT JOIN properties_info
+    ON properties_info.property_id = application.application_property_id
+    
+LEFT JOIN properties_table
+    ON properties_table.id = application.application_property_id
+
+LEFT JOIN raw_stage.scheduler_appraisers
+    ON scheduler_appraisers.id = properties_table.homechecker_id
+    
+LEFT JOIN key_visits_1
+    ON key_visits_1.property_id = application.application_property_id AND key_visits_1.begin_at_loc > payment_date_loc
+
+LEFT JOIN raw_stage.users
+    ON users.id = application.application_user_id
+    
+LEFT JOIN estado_perfil
+    ON estado_perfil.global_evaluation_id = evaluation_member_main.global_evaluation_id AND estado_perfil.property_id = application.application_property_id
+
+WHERE TRUE
+    AND payment_date_loc >= '2025-06-01'
+    --AND application.application_property_id = '154273' 155269
+    AND reservation.country = 'Chile'
+    -- AND application.application_property_id = '149945'
+    -- AND reservation_payment_id = '880d6d16-e9dc-4a59-b5f5-eaab5bd624be'
+    --AND lease_application_id = '395592'
+    --AND application.contract_id = '46408'
+ORDER BY payment_date_loc ASC 
