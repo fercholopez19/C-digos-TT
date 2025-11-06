@@ -1,0 +1,67 @@
+function onFormSubmit(e) {
+  const v = e.namedValues;
+  const leaseId = v["Lease ID"]?.[0];
+
+  // Respuestas Checklist
+  const ck_ggcc = v["GGCC"]?.[0];
+  const ck_limpieza = v["Limpieza"]?.[0];
+  const ck_agua = v["Agua"]?.[0];
+  const ck_luz = v["Luz"]?.[0];
+  const ck_gas = v["Gas"]?.[0];
+  const ck_llaves = v["Llaves"]?.[0];
+  const ck_bodega = v["Bodega"]?.[0];
+  const ck_entrada = v["Autorizacion Entrada"]?.[0];
+  const ck_reparaciones = v["Reparaciones"]?.[0];
+  const ck_estacionamiento = v["Estacionamiento"]?.[0];
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hilosSheet = ss.getSheetByName("Hilos");
+  const hilosData = hilosSheet.getDataRange().getValues();
+
+  const match = hilosData.find(row => String(row[0]).trim() === String(leaseId).trim());
+  if (!match) {
+    console.error("No se encontró hilo para el Lease ID:", leaseId);
+    return;
+  }
+
+  const threadName = match[1];
+  if (!threadName || typeof threadName !== 'string' || !threadName.includes("/")) {
+    console.error("Formato de threadName inválido o vacío para Lease ID:", leaseId);
+    return;
+  }
+
+  const spaceId = threadName.split("/")[1];
+
+  const card = {
+    header: {
+      title: "CHECKLIST ACTUALIZADO",
+      imageUrl: "https://developers.google.com/chat/images/quickstart-app-avatar.png",
+      imageType: "CIRCLE"
+    },
+    sections: [
+      {
+        header: "CHECKLIST",
+        collapsible: true,
+        uncollapsibleWidgetsCount: 2,
+        widgets: [
+          { decoratedText: { topLabel: "GGCC 💰", text: ck_ggcc || "No informado" } },
+          { decoratedText: { topLabel: "Limpieza 🧹", text: ck_limpieza || "No informado" } },
+          { decoratedText: { topLabel: "Agua 💧", text: ck_agua || "No informado" } },
+          { decoratedText: { topLabel: "Luz 💡", text: ck_luz || "No informado" } },
+          { decoratedText: { topLabel: "Gas ⛽", text: ck_gas || "No informado" } },
+          { decoratedText: { topLabel: "Llaves 🔑", text: ck_llaves || "No informado" } },
+          { decoratedText: { topLabel: "Bodega 🔐", text: ck_bodega || "No informado" } },
+          { decoratedText: { topLabel: "Autorización Entrada 📧", text: ck_entrada || "No informado" } },
+          { decoratedText: { topLabel: "Reparaciones 🔨", text: ck_reparaciones || "No informado" } },
+          { decoratedText: { topLabel: "Estacionamiento 🚗", text: ck_estacionamiento || "No informado" } }
+        ]
+      }
+    ]
+  };
+
+
+  google_chat.sendGoogleChatMessage(spaceId, null, card, threadName);
+}
+
+
+
