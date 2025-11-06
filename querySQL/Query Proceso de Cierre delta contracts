@@ -1,0 +1,84 @@
+with subscription_subscription as (
+SELECT a.*
+FROM subscription_subscription a
+INNER JOIN (
+    SELECT  property_id
+            ,max(created_at) created_at
+    FROM subscription_subscription
+    group by 1 
+) b ON a.created_at = b.created_at
+)
+
+, tabla_final AS (
+Select 
+    --date_trunc(Delta , init_date) init_date
+    contracts.id
+    ,contracts.created_at
+    ,contracts.updated_at
+    ,contracts.init_date
+    ,EXTRACT('day' from (CURRENT_DATE::timestamp - contracts.updated_at)) "Ultima Actulizacion"
+    ,contracts.status
+    ,contracts.online_process_status
+    ,contracts.property_id
+    ,subscription_subscription.init_reason
+    ,scheduler_appraisers.name
+    ,concat(users.name, ' ', last_name) as ejecutiva
+    ,subscription_subscription.status sub_status,
+    
+    CASE 
+    WHEN contracts.status IN ('Finalizado', 'Pagado') THEN '13 - Botón pagado/pendiente de entrega'
+    WHEN contracts.status IN ('Boton de pago enviado', 'Generar boton de pago') THEN '12 - Botón de pago pendiente'
+    WHEN contracts.status = 'Listo para redaccion' AND contracts.online_process_status = 'Signatures completed' THEN '11 - Contrato firmado por AA'
+    WHEN contracts.status = 'Listo para redaccion' AND contracts.online_process_status = 'Links sent others' THEN '10 - Contrato enviado a AA'
+    WHEN contracts.status = 'Listo para redaccion' AND contracts.online_process_status = 'Links sent lessor' THEN '09 - Contrato enviado a PP'
+    WHEN contracts.status = 'Listo para redaccion' AND contracts.online_process_status = 'Pending' THEN '08 - Contrato no enviado'
+    WHEN contracts.status IN ('Aprobado por propietario', 'Perfil aprobado') THEN '06 - Perfil aprobado por PP'
+    WHEN contracts.status IN ('Rechazado', 'Re-evaluacion') THEN '07 - Perfil rechazado por PP'
+    WHEN contracts.status IN ('Aprobacion propietario', 'Perfil enviado') THEN '05 - Perfil enviado a PP'
+    ELSE '15 - Desistidos'
+    END AS estado_global
+
+    /*
+    ,count(distinct(contracts.id)) Total
+    ,count(distinct(contracts.id)) filter (where contracts.status like 'Generar boton de pago') Boton_Pago
+    
+    , count(distinct(contracts.id)) filter (where contracts.status like 'Generar boton de pago') Boton_Pago
+    , count(distinct(contracts.id)) filter (where contracts.status like 'Listo para redaccion' and online_process_status in ('Links sent lessor', 'Links sent others') )  Firmas
+    , count(distinct(contracts.id)) filter (where contracts.status like 'Generar boton de pago') Boton_Pago
+    
+    , count(distinct(contracts.id)) filter (where contracts.status like 'Perfil enviado') Perfil_enviado
+    , count(distinct(contracts.id)) filter (where contracts.status like 'Pagado') Pagado
+    , count(distinct(contracts.id)) filter (where contracts.status in ('Desistido','Rechazado','Rechazado por Propietario') ) Perdido 
+    */
+    
+from contracts 
+    left join subscription_subscription
+    on subscription_subscription.contract_id = contracts.id
+        left join properties 
+        on properties.id = subscription_subscription.property_id
+            left join scheduler_appraisers
+            on scheduler_appraisers.id = contracts.houmer_id
+                left join users
+                on users.id = properties.houm_owner_id
+where true 
+    [[and {{fecha_creacion_contrato}}]]
+    [[and {{Status}}]]
+    [[and {{online_process_status}}]]
+    [[and {{ID_propiedad}}]]
+    [[and {{ID_contrato}}]]
+    [[and {{Init_date}}]]
+    and contracts.updated_at > CURRENT_DATE - interval '12' month
+    and contracts.created_at > CURRENT_DATE - interval '12' month
+   -- and extract('month' from contracts.updated_at) > extract('month' from current_timestamp)-2
+  --  and extract('month' from contracts.created_at)> extract('month' from current_timestamp)-3
+ --   and extract('year' from contracts.updated_at) = extract('year' from current_timestamp)
+ --   and extract('year' from contracts.created_at) = extract('year' from current_timestamp)
+    and properties.country = 'Chile'
+    
+group by contracts.id, init_reason, scheduler_appraisers.name, properties.houm_owner_id, users.name, users.last_name, subscription_subscription.status --*date_trunc(Delta , init_date)
+
+order by updated_at desc
+)
+
+SELECT * from tabla_final WHERE TRUE 
+[[and estado_global = {{estado_global}}]]
