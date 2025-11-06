@@ -1,0 +1,79 @@
+
+
+WITH proc_lease_application AS (
+    SELECT
+        *
+    FROM "houmdw_prod"."dbt_processing"."proc_lease_application"
+)
+
+, proc_reservation AS (
+    SELECT
+        *   
+    FROM "houmdw_prod"."dbt_processing"."proc_reservation"
+)
+
+
+, proc_global_evaluation AS (
+SELECT * FROM "houmdw_prod"."dbt_processing"."proc_global_evaluation"
+)
+
+
+SELECT 
+proc_reservation.movements_payment_id,   				--id de movement de la reserva
+proc_reservation.payment_id,    						--mismo id que en mongo que debería siempre coexistir a menos que se hagan pagos de reserva por vía flujos antiguos de applicant (legacy) y no del nuevo proceso de cierres
+proc_reservation.reservation_id, 
+--movements
+proc_reservation.movements_payment_date_loc, 			--fecha de pago de reserva según mongo/movements
+proc_reservation.movements_status, 						--estado según mongo/movements
+proc_reservation.movements_amount, 								--monto  según mongo/movements		
+proc_reservation.property_id AS movements_property_id,
+--reservations
+proc_reservation.payment_link,	
+proc_reservation.paid_at 		AS reservation_paid_at,  		--fecha de pago de reserva según modelo reservations
+proc_reservation.reservation_status,					--amount según reservations		
+proc_reservation.amount, 		
+proc_reservation.refund_id,
+proc_reservation.refund_date,
+proc_reservation.appraiser_id 	AS reservation_appraiser_id,
+--proc_reservation.lease_application_id,
+--lease application
+---proc_lease_application.*,
+
+proc_lease_application.lease_application_id,
+
+'https://admin.houm.com/admin/lease-application/'||proc_lease_application.lease_application_id AS lease_application_url,
+---proc_lease_application.created_at AS application_created_at,
+proc_lease_application.application_user_id,
+proc_lease_application.application_property_id,
+proc_lease_application.contract_id AS application_contract_id,
+
+
+proc_lease_application.application_status,				--
+--proc_lease_application.application_status_description,  
+
+proc_lease_application.sub_status,   					--estado sub traido de modelo de subs
+proc_lease_application.sub_payment_at_loc,   			--timestamp de primer pago desde subs
+proc_lease_application.lease_contract_paid_date_loc, 	--timestamp de primer pago desde lease application
+proc_lease_application.payment_at_loc,					--timestamp de primer pago desde lease application
+proc_lease_application.contract_payment_id, 			
+--forms
+proc_lease_application.contract_preparation_form_id,	
+proc_lease_application.property_condition_preparation_form_id,
+
+--evaluation
+proc_lease_application.evaluation_id AS global_evaluation_id,
+proc_lease_application.evaluation_form_link,
+proc_global_evaluation.g_evaluation_id,
+proc_global_evaluation.g_evaluation_status,
+proc_global_evaluation.url_evaluation,
+proc_global_evaluation.ev_member_main_status,
+proc_global_evaluation.codebtor_status,
+proc_global_evaluation.complement_status,
+proc_global_evaluation.landlord_approval_profile_created_at, --creacion del perfil para aprobacion del propietario
+proc_global_evaluation.landlord_approval_profile_updated_at, --update del perfil para aprobacion del propietario (será esta la marca de la aprobación)
+proc_global_evaluation.landlord_approval_profile_status
+
+FROM proc_reservation
+LEFT JOIN proc_lease_application ON proc_lease_application.lease_application_id = proc_reservation.lease_application_id
+LEFT JOIN proc_global_evaluation ON proc_global_evaluation.g_evaluation_id = proc_lease_application.evaluation_id
+WHERE TRUE
