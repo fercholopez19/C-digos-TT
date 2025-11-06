@@ -1,0 +1,245 @@
+WITH reservation AS (
+SELECT 
+    reservation.id AS reservation_id,
+    COALESCE((timezone( prop_mz.timezone, movements.date::TIMESTAMP)::TIMESTAMP WITH TIME ZONE),movements.date::TIMESTAMP) AS payment_date_loc ,
+    reservation.payment_id,
+    reservation.created_at reservation_created_at,
+    reservation.payment_link,
+    reservation.refund_id,
+    movements.status as mongo_status,
+    reservation_status.status AS status_reservation,
+    reservation_status.description AS status_description,
+    reservation.amount,
+
+--HOUMER
+    reservation.appraiser_id,
+    scheduler_appraisers.name appraiser_name,
+    scheduler_appraisers.email appraiser_email,
+    scheduler_appraisers.country,
+
+--LEASE APPLICATION
+    reservation.lease_application_id
+
+FROM raw_stage.reservation
+
+LEFT JOIN raw_stage.reservation_status
+    ON reservation.status_id = reservation_status.id 
+LEFT JOIN raw_stage.scheduler_appraisers
+    ON scheduler_appraisers.id = reservation.appraiser_id
+    
+LEFT JOIN dbt_staging.stg_payments_cl_db_movements AS movements
+    ON movements._id = reservation.payment_id
+    
+LEFT JOIN dbt_processing.proc_properties_mz AS prop_mz 
+    ON prop_mz.property_id = movements.property_id
+    
+
+WHERE TRUE
+)
+
+-- SELECT * FROM reservation WHERE country = 'Mexico'
+
+, application AS ( 
+SELECT 
+
+    lease_application.id AS application_id,
+    lease_application.created_at AS application_created_at,
+    lease_application.application_user_id,
+
+    lease_application.property_id AS application_property_id,
+    lease_application.contract_id,
+
+--STATUS APPLICATION
+    lease_application_status.status application_status,
+    lease_application_status.description application_status_description,
+
+--EVALUACIÓN
+    lease_application.evaluation,
+
+--CONTRACT
+    lease_application.contract_preparation_form_id,
+    lease_application.property_condition_preparation_form_id
+
+FROM raw_stage.lease_application
+
+LEFT JOIN raw_stage.lease_application_status
+    ON lease_application.status_id = lease_application_status.id 
+
+ORDER BY lease_application.created_at DESC
+)
+
+-- SELECT * FROM application
+
+, lease_application_process AS (
+SELECT
+    application.application_property_id AS property_id,
+    reservation.country,
+
+    application.application_id AS lease_application_id,
+    application.application_status AS status_lease_application,
+
+    reservation.reservation_id,
+    reservation.payment_date_loc,
+    reservation.mongo_status,
+    reservation.status_reservation,
+    reservation.amount,
+    reservation.appraiser_name,
+
+    global_evaluation.id AS global_evaluation_id,
+    global_evaluation.status AS status_global_evaluation, 
+
+    application.contract_id
+
+
+FROM reservation
+
+LEFT JOIN application 
+    ON reservation.lease_application_id = application.application_id 
+LEFT JOIN raw_stage.global_evaluation
+    ON global_evaluation.id = application.evaluation
+    
+WHERE TRUE 
+    AND reservation.country = 'Chile'
+)
+
+-- SELECT * FROM lease_application_process WHERE global_evaluation_id IS NOT NULL
+
+
+, global_evaluation_main_table AS (
+SELECT 
+    global_evaluation.id as global_evaluation_id,
+    global_evaluation.created_at, 
+    global_evaluation.updated_at,
+    global_evaluation.status,
+    global_evaluation.country,
+    global_evaluation_external_references.value AS property_id
+    
+FROM raw_stage.global_evaluation
+
+LEFT JOIN raw_stage.global_evaluation_external_references
+    ON global_evaluation_external_references.global_evaluation_id = global_evaluation.id WHERE global_evaluation_external_references.key = 'property_id'
+    
+    
+)
+
+, evaluation_member AS (
+SELECT 
+    evaluation_member.*,
+    INITCAP(users.name||' '||users.last_name) AS user_name,
+    users.document
+FROM raw_stage.evaluation_member
+
+
+LEFT JOIN raw_stage.users
+    ON users.id = evaluation_member.external_id
+
+WHERE user_name != 'Francomx Capurromx'
+)
+
+, evaluation_member_main AS (
+SELECT 
+    evaluation_member.*,
+    evaluation_person_information.name
+    
+FROM evaluation_member
+
+LEFT JOIN raw_stage.evaluation_person_information
+    ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+    
+WHERE role = 'main' AND status != 'start' 
+)
+
+, evaluation_member_codebtor AS (
+SELECT 
+    evaluation_member.*,
+    evaluation_person_information.name
+    
+FROM evaluation_member
+
+LEFT JOIN raw_stage.evaluation_person_information
+    ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+
+WHERE role = 'codebtor'
+)
+
+, evaluation_member_rent_complement AS (
+SELECT 
+    evaluation_member.*,
+    evaluation_person_information.name
+    
+FROM evaluation_member
+
+LEFT JOIN raw_stage.evaluation_person_information
+    ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+
+WHERE role = 'rent_complement'
+)
+
+, contract_insurance AS (
+SELECT 
+    contract_id,
+    insurance_company_id,
+    name,
+    guaranteed_months
+    
+FROM raw_stage.insurances_insurancecompanycontract
+
+LEFT JOIN raw_stage.insurances_insurancecompany
+    ON insurances_insurancecompany.id = insurances_insurancecompanycontract.insurance_company_id
+
+) 
+
+, main_extended AS (
+SELECT
+
+    lease_application_process.lease_application_id,
+    lease_application_process.status_lease_application,
+    lease_application_process.reservation_id,
+    
+    TO_CHAR(lease_application_process.payment_date_loc,'YYYY-MM-DD HH24:MM') AS payment_date_loc,
+    lease_application_process.mongo_status,
+    lease_application_process.status_reservation,
+    lease_application_process.amount,
+    lease_application_process.appraiser_name,
+    
+    global_evaluation_main_table.global_evaluation_id,
+    global_evaluation_main_table.property_id,
+    
+    evaluation_member_main.external_id AS main_user_id,
+    evaluation_member_main.user_name AS main_name, 
+    evaluation_member_main.document AS main_document,
+    
+    -- evaluation_member_rent_complement.id AS rent_complement_id,
+    evaluation_member_rent_complement.external_id AS complement_user_id,
+    evaluation_member_rent_complement.user_name AS complement_name, 
+    evaluation_member_rent_complement.document AS complement_document,
+
+    evaluation_member_codebtor.external_id AS codebtor_user_id,
+    evaluation_member_codebtor.user_name AS codebtor_name, 
+    evaluation_member_codebtor.document AS codebtor_document,
+    
+    lease_application_process.contract_id,
+    contract_insurance.name AS name_insurance,
+    contract_insurance.guaranteed_months 
+
+
+    
+FROM global_evaluation_main_table
+
+LEFT JOIN evaluation_member_main
+    ON evaluation_member_main.global_evaluation_id = global_evaluation_main_table.global_evaluation_id
+LEFT JOIN evaluation_member_rent_complement
+    ON evaluation_member_rent_complement.global_evaluation_id = global_evaluation_main_table.global_evaluation_id
+LEFT JOIN evaluation_member_codebtor
+    ON evaluation_member_codebtor.global_evaluation_id = global_evaluation_main_table.global_evaluation_id
+LEFT JOIN lease_application_process
+    ON lease_application_process.global_evaluation_id = global_evaluation_main_table.global_evaluation_id
+LEFT JOIN contract_insurance
+    ON contract_insurance.contract_id = lease_application_process.contract_id
+    
+)
+
+SELECT * FROM main_extended
+WHERE TRUE
+    AND main_user_id IS NOT NULL
+ORDER BY payment_date_loc DESC NULLS LAST
