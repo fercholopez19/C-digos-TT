@@ -1,0 +1,199 @@
+WITH global_evaluation_main_table AS (
+SELECT 
+    global_evaluation.country,
+    global_evaluation.id AS g_evaluation_id,
+    TO_CHAR(global_evaluation.created_at,'YYYY-MM-DD HH24:MM') AS g_evaluation_created_at,
+    TO_CHAR(global_evaluation.updated_at,'YYYY-MM-DD HH24:MM') AS g_evaluation_updated_at,
+    global_evaluation.status AS g_evaluation_status,
+    global_evaluation_external_references.value AS property_id
+    
+FROM global_evaluation
+
+    LEFT JOIN global_evaluation_external_references
+        ON global_evaluation_external_references.global_evaluation_id = global_evaluation.id WHERE global_evaluation_external_references.key = 'property_id'
+    
+    
+)
+
+, evaluation_member AS (
+SELECT 
+    evaluation_member.*
+FROM evaluation_member
+)
+
+, evaluation_member_main AS (
+SELECT 
+    evaluation_member.id as ev_member_main_id,
+    evaluation_member.external_id as ev_member_main_user_id,
+    TO_CHAR(evaluation_member.created_at,'YYYY-MM-DD HH24:MM') AS ev_member_main_created_at,
+    TO_CHAR(evaluation_member.updated_at,'YYYY-MM-DD HH24:MM') AS ev_member_main_updated_at,
+    evaluation_member.global_evaluation_id as ev_member_main_g_ev_id,
+    evaluation_person_information.name as ev_member_main_name,
+    evaluation_member.status as ev_member_main_status
+    
+
+    
+FROM evaluation_member
+
+    LEFT JOIN evaluation_person_information
+        ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+    
+WHERE role = 'main'
+)
+
+, evaluation_member_complement AS (
+SELECT 
+    evaluation_member.id as ev_member_complement_id,
+    evaluation_member.external_id as ev_member_complement_user_id,
+    evaluation_member.global_evaluation_id as ev_member_complement_g_ev_id,
+    evaluation_person_information.name as ev_member_complement_name,
+
+    
+    CASE evaluation_member.status
+       WHEN 'commercially_approved' THEN 'Aprobada comercialmente'
+       WHEN 'desisted' THEN 'Desistida'
+       WHEN 'new_docs' THEN 'Nuevos documentos'
+       WHEN 'pending_docs' THEN 'Documentación pendiente'
+       WHEN 'ready_for_evaluation' THEN 'Lista para evaluar'
+       WHEN 'rejected' THEN 'Perfil rechazado'
+       WHEN 'start' THEN 'Por comenzar'
+       ELSE 'Desconocido' -- Para manejar valores inesperados
+    END AS ev_member_complement_status
+    
+
+    
+FROM evaluation_member
+
+    LEFT JOIN evaluation_person_information
+        ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+    
+WHERE role = 'rent_complement'
+)
+
+, evaluation_member_codebtor AS (
+SELECT 
+    evaluation_member.id as ev_member_codebtor_id,
+    evaluation_member.external_id as ev_member_codebtor_user_id,
+    evaluation_member.global_evaluation_id as ev_member_codebtor_g_ev_id,
+    evaluation_person_information.name as ev_member_codebtor_name,
+    
+    CASE evaluation_member.status
+       WHEN 'commercially_approved' THEN 'Aprobada comercialmente'
+       WHEN 'desisted' THEN 'Desistida'
+       WHEN 'new_docs' THEN 'Nuevos documentos'
+       WHEN 'pending_docs' THEN 'Documentación pendiente'
+       WHEN 'ready_for_evaluation' THEN 'Lista para evaluar'
+       WHEN 'rejected' THEN 'Perfil rechazado'
+       WHEN 'start' THEN 'Por comenzar'
+       ELSE 'Desconocido' -- Para manejar valores inesperados
+    END AS ev_member_codebtor_status
+    
+
+    
+FROM evaluation_member
+
+    LEFT JOIN evaluation_person_information
+        ON evaluation_person_information.evaluation_member_id = evaluation_member.id
+    
+WHERE role = 'codebtor'
+)
+
+
+, global_ev_main_person AS (
+SELECT
+    global_evaluation_main_table.*,
+    'https://admin.houm.com/admin/evaluations/cl/'||global_evaluation_main_table.g_evaluation_id AS url_evaluation,
+    evaluation_member_main.*,
+    
+    evaluation_member_codebtor.ev_member_codebtor_user_id,
+    evaluation_member_codebtor.ev_member_codebtor_status,
+    
+    evaluation_member_complement.ev_member_complement_user_id,
+    evaluation_member_complement.ev_member_complement_status
+    
+    
+FROM global_evaluation_main_table
+
+    LEFT JOIN evaluation_member_main
+        ON evaluation_member_main.ev_member_main_g_ev_id = global_evaluation_main_table.g_evaluation_id
+        
+    LEFT JOIN evaluation_member_complement
+        ON evaluation_member_complement.ev_member_complement_g_ev_id = global_evaluation_main_table.g_evaluation_id
+    
+    LEFT JOIN evaluation_member_codebtor
+        ON evaluation_member_codebtor.ev_member_codebtor_g_ev_id = global_evaluation_main_table.g_evaluation_id
+    
+    
+WHERE TRUE 
+    AND ev_member_main_status != 'start'
+
+ORDER BY ev_member_main_created_at DESC
+)
+SELECT 
+    country,
+    g_evaluation_id,
+    g_evaluation_created_at,
+    -- g_evaluation_updated_at,
+    TO_CHAR(current_timestamp,'YYYY-MM-DD HH24:MM') AS updated_at,
+    
+    CASE g_evaluation_status
+       WHEN 'approved' THEN 'Aprobada'
+       WHEN 'incomplete' THEN 'Incompleta'
+       WHEN 'partially_approved' THEN 'Pre-aprobada'
+       WHEN 'pending' THEN 'Pendiente'
+       WHEN 'rejected' THEN 'Rechazada'
+       WHEN 'cancelled' THEN 'Cancelada'
+       ELSE 'Desconocido' -- Por si hay algún otro estado inesperado
+    END AS g_evaluation_status,
+
+    property_id,
+    url_evaluation,
+    ev_member_main_id,
+    ev_member_main_user_id,
+    ev_member_main_created_at,
+    ev_member_main_updated_at,
+    ev_member_main_g_ev_id,
+    ev_member_main_name,
+    
+    CASE ev_member_main_status
+       WHEN 'commercially_approved' THEN 'Aprobada comercialmente'
+       WHEN 'desisted' THEN 'Desistida'
+       WHEN 'new_docs' THEN 'Nuevos documentos'
+       WHEN 'pending_docs' THEN 'Documentación pendiente'
+       WHEN 'ready_for_evaluation' THEN 'Lista para evaluar'
+       WHEN 'rejected' THEN 'Perfil rechazado'
+       WHEN 'start' THEN 'Por comenzar'
+       ELSE 'Desconocido' -- Para manejar valores inesperados
+    END AS ev_member_main_status,
+    
+    STRING_AGG(ev_member_codebtor_user_id::TEXT, ' ; ') AS codebtor_user_ids,
+    STRING_AGG(ev_member_codebtor_status::TEXT, ' ; ') AS codebtor_status,
+    STRING_AGG(ev_member_complement_user_id::TEXT, ' ; ') AS complement_user_ids,
+    STRING_AGG(ev_member_complement_status::TEXT, ' ; ') AS complement_status
+    
+FROM global_ev_main_person
+    
+WHERE TRUE
+    AND ev_member_main_created_at > '2025-06-01'
+    AND country = 'Chile'
+-- ev_member_main_id = '0ab51aaf-d422-4bdb-9a8b-6ba5ab1f9763'
+GROUP BY
+    country,
+    g_evaluation_id,
+    g_evaluation_created_at,
+    updated_at,
+    g_evaluation_status,
+    property_id,
+    url_evaluation,
+    ev_member_main_id,
+    ev_member_main_user_id,
+    ev_member_main_created_at,
+    ev_member_main_updated_at,
+    ev_member_main_g_ev_id,
+    ev_member_main_name,
+    ev_member_main_status
+ORDER BY ev_member_main_created_at asc
+
+
+
+
