@@ -1,0 +1,188 @@
+WITH global_evaluation AS (
+    SELECT
+        *
+    FROM "houmdw_prod"."dbt_staging"."stg_global_evaluation"
+)
+
+, global_evaluation_external_references AS (
+    SELECT
+        *
+    FROM "houmdw_prod"."dbt_staging"."stg_global_evaluation_external_references"
+)
+
+, evaluation_member AS (
+    SELECT 
+        *
+    FROM "houmdw_prod"."dbt_staging"."stg_evaluation_member"
+)
+
+
+, global_evaluation_factor AS (
+    SELECT
+    id,
+	created_at,
+	updated_at,
+    global_evaluation_id,
+	provider_name,
+    status,
+    JSON_EXTRACT_PATH_TEXT(raw_input, 'property_id') AS property_id,
+    JSON_EXTRACT_PATH_TEXT(raw_input, 'lease_application_id') AS lease_application_id,
+    JSON_EXTRACT_PATH_TEXT(raw_output, 'status') AS status_profile,
+    CASE 
+        WHEN JSON_EXTRACT_PATH_TEXT(raw_output, 'status') = 'approved' THEN 'Perfil Aprobado'
+        WHEN JSON_EXTRACT_PATH_TEXT(raw_output, 'status') = 'rejected' THEN 'Perfil Rechazado' 
+        WHEN COALESCE(NULLIF(JSON_EXTRACT_PATH_TEXT(raw_output, 'status'), ''), '') = '' THEN 'Perfil Enviado'  ---hay un status dentro del output que se llama "reevaluation" y el estado global es "ongoing"
+    END AS status_perfil
+    FROM "houmdw_prod"."dbt_staging"."stg_global_evaluation_factor"
+),
+
+proc_core_users AS (
+    SELECT 
+        *
+    FROM "houmdw_prod"."dbt_processing"."proc_core_users"
+),
+
+properties_mz AS (
+    SELECT
+        property_id, 
+        geo_id,
+        COALESCE(timezone, 'America/Santiago') AS timezone
+    FROM "houmdw_prod"."dbt_processing"."proc_properties_mz"
+),
+
+global_evaluation_main_table AS (
+    SELECT 
+        global_evaluation.country,
+        global_evaluation_external_references.value AS property_id,
+        global_evaluation.id AS g_evaluation_id,
+        global_evaluation.created_at AS g_evaluation_created_at,
+        global_evaluation.updated_at AS g_evaluation_updated_at,
+        global_evaluation.status AS g_evaluation_status
+    FROM global_evaluation
+    LEFT JOIN global_evaluation_external_references
+        ON global_evaluation_external_references.global_evaluation_id = global_evaluation.id
+    WHERE global_evaluation_external_references.key = 'property_id'
+),
+
+evaluation_member_main AS (
+    SELECT 
+        evaluation_member.id AS ev_member_main_id,
+        evaluation_member.external_id AS ev_member_main_user_id,
+        evaluation_member.created_at AS ev_member_main_created_at,
+        evaluation_member.updated_at AS ev_member_main_updated_at,
+        evaluation_member.global_evaluation_id AS ev_member_main_g_ev_id,
+        proc_core_users.full_name AS ev_member_main_full_name,
+        evaluation_member.status AS ev_member_main_status
+    FROM evaluation_member
+    LEFT JOIN proc_core_users
+        ON proc_core_users.user_id = evaluation_member.external_id
+    WHERE role = 'main'
+),
+
+evaluation_member_complement AS (
+    SELECT 
+        evaluation_member.id AS ev_member_complement_id,
+        evaluation_member.external_id AS ev_member_complement_user_id,
+        evaluation_member.global_evaluation_id AS ev_member_complement_g_ev_id,
+        proc_core_users.full_name AS ev_member_complement_full_name,  
+        evaluation_member.status AS ev_member_complement_status
+    FROM evaluation_member
+    LEFT JOIN proc_core_users
+        ON proc_core_users.user_id = evaluation_member.external_id
+    WHERE role = 'rent_complement'
+),
+
+evaluation_member_codebtor AS (
+    SELECT 
+        evaluation_member.id AS ev_member_codebtor_id,
+        evaluation_member.external_id AS ev_member_codebtor_user_id,
+        evaluation_member.global_evaluation_id AS ev_member_codebtor_g_ev_id,
+        proc_core_users.full_name AS ev_member_codebtor_full_name,  
+        evaluation_member.status AS ev_member_codebtor_status
+    FROM evaluation_member
+    LEFT JOIN proc_core_users
+        ON proc_core_users.user_id = evaluation_member.external_id
+    WHERE role = 'codebtor'
+),
+
+global_ev_main_person AS (
+    SELECT
+        global_evaluation_main_table.*,
+        'https://admin.houm.com/admin/evaluations/co/' || global_evaluation_main_table.g_evaluation_id AS url_evaluation,
+        evaluation_member_main.*,
+        evaluation_member_codebtor.ev_member_codebtor_user_id,
+        evaluation_member_codebtor.ev_member_codebtor_full_name,
+        evaluation_member_codebtor.ev_member_codebtor_status,
+        evaluation_member_complement.ev_member_complement_user_id,
+        evaluation_member_complement.ev_member_complement_full_name,
+        evaluation_member_complement.ev_member_complement_status,
+        -- 
+        global_evaluation_factor.created_at AS landlord_approval_profile_created_at,
+        global_evaluation_factor.updated_at AS landlord_approval_profile_updated_at,
+        global_evaluation_factor.status_profile AS landlord_approval_profile_status,
+        timezone( timezone.timezone, g_evaluation_created_at)::TIMESTAMPTZ AS g_evaluation_created_at_loc,
+        timezone( timezone.timezone, ev_member_main_created_at)::TIMESTAMPTZ AS ev_member_main_created_at_loc,
+        timezone( timezone.timezone, ev_member_main_updated_at)::TIMESTAMPTZ AS ev_member_main_updated_at_loc
+
+    FROM global_evaluation_main_table
+    LEFT JOIN evaluation_member_main
+        ON evaluation_member_main.ev_member_main_g_ev_id = global_evaluation_main_table.g_evaluation_id
+    LEFT JOIN evaluation_member_complement
+        ON evaluation_member_complement.ev_member_complement_g_ev_id = global_evaluation_main_table.g_evaluation_id
+    LEFT JOIN evaluation_member_codebtor
+        ON evaluation_member_codebtor.ev_member_codebtor_g_ev_id = global_evaluation_main_table.g_evaluation_id
+    LEFT JOIN global_evaluation_factor
+        ON global_evaluation_factor.global_evaluation_id = global_evaluation_main_table.g_evaluation_id
+    LEFT JOIN properties_mz timezone
+        ON timezone.property_id = global_evaluation_main_table.property_id
+    WHERE TRUE 
+        AND ev_member_main_status != 'start'
+    ORDER BY ev_member_main_created_at DESC
+)
+
+SELECT 
+    g_evaluation_id,
+    country,
+    property_id,
+    g_evaluation_created_at,
+    g_evaluation_created_at_loc,
+    g_evaluation_status,
+    url_evaluation,
+    ev_member_main_created_at,
+    ev_member_main_created_at_loc,
+    ev_member_main_updated_at,
+    ev_member_main_updated_at_loc,
+    ev_member_main_id,
+    ev_member_main_user_id,
+    ev_member_main_full_name,
+    ev_member_main_status,
+    landlord_approval_profile_created_at,
+    landlord_approval_profile_updated_at,
+    landlord_approval_profile_status,
+    LISTAGG(CAST(ev_member_codebtor_user_id AS TEXT), ' ; ') AS codebtor_user_ids,
+    LISTAGG(CAST(ev_member_codebtor_full_name AS TEXT), ' ; ') AS codebtor_user_full_names,
+    LISTAGG(CAST(ev_member_codebtor_status AS TEXT), ' ; ') AS codebtor_status,
+    LISTAGG(CAST(ev_member_complement_user_id AS TEXT), ' ; ') AS complement_user_ids,
+    LISTAGG(CAST(ev_member_complement_full_name AS TEXT), ' ; ') AS complement_user_full_names,
+    LISTAGG(CAST(ev_member_complement_status AS TEXT), ' ; ') AS complement_status
+FROM global_ev_main_person
+GROUP BY
+    country,
+    g_evaluation_id,
+    g_evaluation_created_at,
+    g_evaluation_created_at_loc,
+    g_evaluation_status,
+    property_id,
+    url_evaluation,
+    ev_member_main_id,
+    ev_member_main_user_id,
+    ev_member_main_created_at,
+    ev_member_main_created_at_loc,
+    ev_member_main_updated_at,
+    ev_member_main_updated_at_loc,
+    ev_member_main_full_name,
+    ev_member_main_status,
+    landlord_approval_profile_created_at,
+    landlord_approval_profile_updated_at,
+    landlord_approval_profile_status
+ORDER BY ev_member_main_created_at ASC
